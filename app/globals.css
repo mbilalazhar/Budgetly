@@ -2820,3 +2820,167 @@ input[type="month"] {
     line-height: 1.6;
   }
 }
+.money-guide {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+.money-guide p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 8px 0 0;
+}
+.pot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+.pot-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.pot-summary > span,
+.pot-summary > small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+.pot-summary > strong {
+  font-size: clamp(20px, 2.4vw, 30px);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.optional-limits {
+  margin-top: 28px;
+}
+.optional-limits > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 8px 0;
+}
+.optional-limits[open] > summary {
+  margin-bottom: 24px;
+}
+@media (max-width: 600px) {
+  .money-guide {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.money-help {
+  margin-bottom: 24px;
+}
+.money-help > summary {
+  cursor: pointer;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.setup-steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  margin: 24px 0;
+}
+.setup-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.step-number {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--muted);
+}
+.step-number.done {
+  color: var(--mint);
+  border-color: var(--mint);
+}
+.setup-step h3,
+.balance-explainer h3,
+.guide-faq h3 {
+  font-size: 15px;
+}
+.setup-step p,
+.balance-explainer p,
+.guide-faq p {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+  margin: 8px 0 10px;
+}
+.balance-explainer {
+  padding: 20px;
+  background: var(--bg);
+  border-radius: 12px;
+}
+.balance-explainer dl {
+  margin: 14px 0;
+}
+.balance-explainer dl > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+}
+.balance-explainer dd {
+  margin: 0;
+  font-weight: 600;
+}
+.guide-faq {
+  margin-top: 24px;
+}
+.due-soon {
+  margin-bottom: 24px;
+}
+.due-totals {
+  color: var(--mint);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+.savings-transfer,
+.pot-history {
+  margin-top: 16px;
+}
+.savings-locations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.chart-bar.refund-bar {
+  background: var(--purple);
+}
+@media (max-width: 600px) {
+  .setup-steps {
+    grid-template-columns: 1fr;
+  }
+  .quick-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .quick-actions .button {
+    padding: 12px 8px;
+  }
+}

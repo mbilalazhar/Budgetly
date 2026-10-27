@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
   available,
+  balanceSummary,
   colors,
   currencies,
   categories,
   canEditTransaction,
   goalBalance,
   reserved,
+  refundableAmount,
   type Budget,
   type Command,
   type Transaction,
@@ -94,6 +96,7 @@ export function emptyBudget(currency = "PKR"): Budget {
     transactions: [],
     requestIds: [],
     spendingLimits: [],
+    pots: [],
   };
 }
 export function applyCommand(original: Budget, command: Command): Budget {
@@ -102,6 +105,7 @@ export function applyCommand(original: Budget, command: Command): Budget {
     fail("Choose whether this debt changes an account balance.");
   if (original.requestIds.includes(command.requestId)) return original;
   const b = structuredClone(original);
+  b.pots ??= [];
   let effectBaseline = original;
   if (
     command.expectedRevision !== undefined &&
@@ -119,6 +123,34 @@ export function applyCommand(original: Budget, command: Command): Budget {
         "This account does not have enough available money. Release savings first if needed.",
       );
     account(id).balance -= amount;
+  };
+  const debitPot = (amount: number, category: string) => {
+    const selection = command.potId;
+    let pot;
+    if (selection === undefined || selection === "auto") {
+      const matches = b.pots!.filter((p) => p.category === category);
+      if (matches.length > 1)
+        fail("Choose which spending pot to use for this category.");
+      pot = matches[0];
+    } else if (selection !== "unassigned" && selection !== "") {
+      pot =
+        b.pots!.find((p) => p.id === selection) ??
+        fail("Choose an existing spending pot.");
+      if (pot.category !== category)
+        fail("Choose the spending pot’s category for this expense.");
+    }
+    if (pot) {
+      if (amount > pot.balance)
+        fail(
+          "This spending pot does not have enough money. Add money to it or choose unassigned money.",
+        );
+      pot.balance -= amount;
+    } else if (amount > balanceSummary(b).free) {
+      fail(
+        "Not enough unassigned money. Choose a spending pot or release reserved money first.",
+      );
+    }
+    return pot?.id;
   };
   const addTransaction = (data: Omit<Transaction, "id" | "createdAt">) =>
     b.transactions.unshift({
@@ -145,6 +177,8 @@ export function applyCommand(original: Budget, command: Command): Budget {
     const from = account(command.accountId);
     const amount = money(command.amount);
     const title = string(command.title, "Description", 100);
+    const category = string(command.category, "Category", 40);
+    const potId = type === "expense" ? debitPot(amount, category) : undefined;
     let toAccountId: string | undefined;
     if (type === "income") from.balance += amount;
     else spend(from.id, amount);
@@ -161,10 +195,178 @@ export function applyCommand(original: Budget, command: Command): Budget {
       amount,
       accountId: from.id,
       toAccountId,
-      category: string(command.category, "Category", 40),
+      category,
+      potId,
     });
   };
   switch (command.action) {
+    case "transaction.refund": {
+      const originalExpense =
+        b.transactions.find((t) => t.id === command.id) ??
+        fail("Original expense not found.");
+      const amount = money(command.amount);
+      if (amount > refundableAmount(b, originalExpense))
+        fail("The refund exceeds the amount still refundable on this expense.");
+      const refundDate = date(command.date);
+      if (refundDate < originalExpense.date)
+        fail("A refund cannot be dated before the original expense.");
+      const into = account(command.accountId);
+      if (originalExpense.potId) {
+        const pot =
+          b.pots.find((p) => p.id === originalExpense.potId) ??
+          fail(
+            "The original spending pot was removed. Record the returned money as income instead.",
+          );
+        pot.balance += amount;
+      }
+      if (originalExpense.type === "saving-spent") {
+        const goal =
+          b.goals.find((g) => g.id === originalExpense.referenceId) ??
+          fail(
+            "The original savings fund was removed. Record the returned money as income and set it aside again.",
+          );
+        let allocation = goal.allocations.find((a) => a.accountId === into.id);
+        if (!allocation) {
+          allocation = { accountId: into.id, amount: 0 };
+          goal.allocations.push(allocation);
+        }
+        allocation.amount += amount;
+      }
+      into.balance += amount;
+      transaction({
+        type: "refund",
+        title: `Refund: ${originalExpense.title}`.slice(0, 100),
+        amount,
+        accountId: into.id,
+        category: originalExpense.category,
+        potId: originalExpense.potId,
+        refundOfId: originalExpense.id,
+      });
+      break;
+    }
+    case "pot.transfer": {
+      const from =
+        b.pots.find((p) => p.id === command.id) ??
+        fail("Choose the source spending pot.");
+      const to =
+        b.pots.find((p) => p.id === command.toPotId) ??
+        fail("Choose the destination spending pot.");
+      if (from.id === to.id) fail("Choose two different spending pots.");
+      const amount = money(command.amount);
+      if (amount > from.balance)
+        fail("The source pot does not hold that much money.");
+      from.balance -= amount;
+      to.balance += amount;
+      transaction({
+        type: "reserve-transfer",
+        title: `Moved from ${from.name} to ${to.name}`.slice(0, 100),
+        amount,
+        accountId: "",
+        category: to.category,
+        potId: from.id,
+        toPotId: to.id,
+      });
+      break;
+    }
+    case "goal.transfer": {
+      const goal =
+        b.goals.find((g) => g.id === command.id) ??
+        fail("Savings fund not found.");
+      const from = account(command.accountId);
+      const to = account(command.toAccountId);
+      if (from.id === to.id) fail("Choose two different accounts.");
+      const amount = money(command.amount);
+      const source =
+        goal.allocations.find((a) => a.accountId === from.id) ??
+        fail("This account does not hold any of these savings.");
+      if (source.amount < amount)
+        fail("This account does not hold that much of these savings.");
+      let destination = goal.allocations.find((a) => a.accountId === to.id);
+      if (!destination) {
+        destination = { accountId: to.id, amount: 0 };
+        goal.allocations.push(destination);
+      }
+      source.amount -= amount;
+      destination.amount += amount;
+      from.balance -= amount;
+      to.balance += amount;
+      transaction({
+        type: "saving-transfer",
+        title: `Moved savings: ${goal.name}`,
+        amount,
+        accountId: from.id,
+        toAccountId: to.id,
+        referenceId: goal.id,
+        category: "Savings",
+      });
+      break;
+    }
+    case "pot.save": {
+      const name = string(command.name, "Spending pot name", 60);
+      const category = choice(command.category, categories, "category");
+      if (command.id) {
+        const pot =
+          b.pots.find((p) => p.id === command.id) ??
+          fail("Spending pot not found.");
+        Object.assign(pot, { name, category });
+      } else {
+        if (b.pots.length >= 100)
+          fail("You can create up to 100 spending pots.");
+        const amount = money(command.amount, true);
+        if (amount > balanceSummary(b).free)
+          fail("You can only reserve money that is still unassigned.");
+        const pot = { id: randomUUID(), name, category, balance: amount };
+        b.pots.push(pot);
+        if (amount)
+          transaction({
+            type: "reserve",
+            title: `Reserved for ${name}`,
+            amount,
+            accountId: "",
+            category,
+            potId: pot.id,
+          });
+      }
+      break;
+    }
+    case "pot.move": {
+      const pot =
+        b.pots.find((p) => p.id === command.id) ??
+        fail("Spending pot not found.");
+      const type = choice(
+        command.type,
+        ["reserve", "reserve-release"],
+        "pot action",
+      );
+      const amount = money(command.amount);
+      if (type === "reserve") {
+        if (amount > balanceSummary(b).free)
+          fail("You can only reserve money that is still unassigned.");
+        pot.balance += amount;
+      } else {
+        if (amount > pot.balance)
+          fail("This pot does not hold that much money.");
+        pot.balance -= amount;
+      }
+      transaction({
+        type,
+        title: `${type === "reserve" ? "Reserved for" : "Released from"} ${pot.name}`,
+        amount,
+        accountId: "",
+        category: pot.category,
+        potId: pot.id,
+      });
+      break;
+    }
+    case "pot.delete": {
+      const pot =
+        b.pots.find((p) => p.id === command.id) ??
+        fail("Spending pot not found.");
+      if (pot.balance)
+        fail("Spend or release the money in this pot before deleting it.");
+      b.pots = b.pots.filter((p) => p.id !== pot.id);
+      break;
+    }
     case "account.save": {
       const name = string(command.name, "Account name", 40);
       const kind = choice(
@@ -254,21 +456,50 @@ export function applyCommand(original: Budget, command: Command): Budget {
     }
     case "goal.save": {
       const name = string(command.name, "Saving purpose", 60);
-      const target = money(command.target);
+      const target = money(
+        command.target === undefined || command.target === ""
+          ? "0"
+          : command.target,
+        true,
+      );
       const color = choice(command.color, colors, "color");
       if (command.id) {
         const goal =
           b.goals.find((item) => item.id === command.id) ??
           fail("Savings goal not found.");
         Object.assign(goal, { name, target, color });
-      } else
-        b.goals.push({
+      } else {
+        const goal = {
           id: randomUUID(),
           name,
           target,
           color,
-          allocations: [],
-        });
+          allocations: [] as { accountId: string; amount: number }[],
+        };
+        const amount = money(
+          command.amount === undefined || command.amount === ""
+            ? "0"
+            : command.amount,
+          true,
+        );
+        if (amount) {
+          const from = account(command.accountId);
+          if (amount > available(b, from.id) || amount > balanceSummary(b).free)
+            fail(
+              "Not enough unassigned money in this account to set aside as savings.",
+            );
+          goal.allocations.push({ accountId: from.id, amount });
+          transaction({
+            type: "saving",
+            title: `Saved for ${name}`,
+            amount,
+            accountId: from.id,
+            category: "Savings",
+            referenceId: goal.id,
+          });
+        }
+        b.goals.push(goal);
+      }
       break;
     }
     case "goal.delete": {
@@ -295,7 +526,7 @@ export function applyCommand(original: Budget, command: Command): Budget {
         (item) => item.accountId === from.id,
       );
       if (type === "saving") {
-        if (available(b, from.id) < amount)
+        if (available(b, from.id) < amount || balanceSummary(b).free < amount)
           fail("This account does not have enough available money to save.");
         if (!allocation) {
           allocation = { accountId: from.id, amount: 0 };
@@ -315,7 +546,10 @@ export function applyCommand(original: Budget, command: Command): Budget {
         title: `${type === "saving" ? "Saved for" : type === "release" ? "Released from" : "Spent from"} ${goal.name}`,
         amount,
         accountId: from.id,
-        category: "Savings",
+        category:
+          type === "saving-spent" && command.category
+            ? string(command.category, "Category", 40)
+            : "Savings",
         referenceId: goal.id,
       });
       break;
@@ -355,6 +589,7 @@ export function applyCommand(original: Budget, command: Command): Budget {
         fail("Recurring expense not found.");
       if (item.due !== command.expectedDue)
         fail("This payment was already recorded. Refresh and try again.");
+      const potId = debitPot(item.amount, item.category);
       spend(item.accountId, item.amount);
       transaction({
         type: "expense",
@@ -363,6 +598,7 @@ export function applyCommand(original: Budget, command: Command): Budget {
         accountId: item.accountId,
         category: item.category,
         referenceId: item.id,
+        potId,
       });
       item.due = nextDue(item.due, item.frequency, item.anchorDay);
       break;
@@ -486,6 +722,10 @@ export function applyCommand(original: Budget, command: Command): Budget {
     default:
       fail("Unknown action.");
   }
+  if (balanceSummary(b).free < 0)
+    fail(
+      "This change would use money reserved for spending pots. Release reserved money or undo dependent spending first.",
+    );
   if (
     b.accounts.some(
       (a) =>

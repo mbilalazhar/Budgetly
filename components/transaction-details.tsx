@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import {
   canEditTransaction,
   canUndoTransaction,
+  refundableAmount,
   type Budget,
   type Transaction,
 } from "@/lib/types";
@@ -14,6 +15,7 @@ export function TransactionDetails({
   close,
   edit,
   undo,
+  refund,
 }: {
   transaction: Transaction;
   budget: Budget;
@@ -21,8 +23,12 @@ export function TransactionDetails({
   close: () => void;
   edit: () => void;
   undo: () => void;
+  refund: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const hasRefunds = budget.transactions.some(
+    (r) => !r.voidedAt && r.refundOfId === t.id,
+  );
   useEffect(() => {
     dialog.current?.showModal();
     const old = document.body.style.overflow;
@@ -71,7 +77,9 @@ export function TransactionDetails({
         <dt>Account</dt>
         <dd>
           {budget.accounts.find((a) => a.id === t.accountId)?.name ||
-            "Removed account"}
+            (t.type.startsWith("reserve")
+              ? "No money moved between accounts"
+              : "Removed account")}
         </dd>
         {t.toAccountId && (
           <>
@@ -81,10 +89,44 @@ export function TransactionDetails({
         )}
         <dt>Category</dt>
         <dd>{t.category}</dd>
+        {t.potId && (
+          <>
+            <dt>Spending pot</dt>
+            <dd>
+              {budget.pots?.find((p) => p.id === t.potId)?.name ||
+                "Removed pot"}
+            </dd>
+          </>
+        )}
         {t.note && (
           <>
             <dt>Note</dt>
             <dd>{t.note}</dd>
+          </>
+        )}
+        {t.toPotId && (
+          <>
+            <dt>To spending pot</dt>
+            <dd>
+              {budget.pots?.find((p) => p.id === t.toPotId)?.name ||
+                "Removed pot"}
+            </dd>
+          </>
+        )}
+        {t.refundOfId && (
+          <>
+            <dt>Refund of</dt>
+            <dd>
+              {budget.transactions.find(
+                (original) => original.id === t.refundOfId,
+              )?.title || "Original expense"}
+            </dd>
+          </>
+        )}
+        {!t.voidedAt && ["expense", "saving-spent"].includes(t.type) && (
+          <>
+            <dt>Refunded so far</dt>
+            <dd>{fmt(t.amount - refundableAmount(budget, t))}</dd>
           </>
         )}
         {t.voidedAt && (
@@ -104,19 +146,26 @@ export function TransactionDetails({
       </dl>
       {!t.voidedAt && (
         <p className="form-hint">
-          {canEditTransaction(t)
-            ? "Correct an amount, date, account, or category. The earlier version stays in your voided history."
-            : "Linked entries update their bill, savings goal, or debt. Undo the entry before recording a corrected one."}
+          {hasRefunds
+            ? "This expense has recorded refunds. Undo those refund entries in Activity before editing or undoing the original expense."
+            : canEditTransaction(t)
+              ? "Correct an amount, date, account, or category. The earlier version stays in your voided history."
+              : "Linked entries update their bill, savings goal, or debt. Undo the entry before recording a corrected one."}
         </p>
       )}
       <div className="modal-actions">
-        {canEditTransaction(t) && (
+        {refundableAmount(budget, t) > 0 && (
+          <button className="button secondary full" onClick={refund}>
+            Record refund
+          </button>
+        )}
+        {canEditTransaction(t) && !hasRefunds && (
           <button className="button primary full" onClick={edit}>
             <Icon name="edit" size={17} />
             Edit transaction
           </button>
         )}
-        {canUndoTransaction(t) && (
+        {canUndoTransaction(t) && !hasRefunds && (
           <button className="button secondary full" onClick={undo}>
             Undo transaction
           </button>

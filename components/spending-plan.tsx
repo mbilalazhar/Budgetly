@@ -49,7 +49,7 @@ export function SpendingPlan({
           <span className="tile peach">
             <Icon name="up" />
           </span>
-          <span>Spent this month</span>
+          <span>Net spending this month</span>
           <strong>{fmt(summary.spent)}</strong>
         </div>
       </div>
@@ -89,12 +89,12 @@ export function SpendingPlan({
                   aria-valuemax={100}
                   aria-valuenow={Math.min(
                     100,
-                    Math.round((limit.used / limit.amount) * 100),
+                    Math.max(0, Math.round((limit.used / limit.amount) * 100)),
                   )}
                 >
                   <span
                     style={{
-                      width: `${Math.min(100, (limit.used / limit.amount) * 100)}%`,
+                      width: `${Math.max(0, Math.min(100, (limit.used / limit.amount) * 100))}%`,
                     }}
                   />
                 </div>
@@ -133,7 +133,8 @@ export function SpendingPlan({
           <div>
             <h2>Where your money went</h2>
             <p>
-              Actual spending by category, including money spent from savings.
+              Expenses minus refunds by category, including savings spending. A
+              negative amount means more refunded than spent this month.
             </p>
           </div>
         </div>
@@ -144,7 +145,17 @@ export function SpendingPlan({
               <div className="progress">
                 <span
                   style={{
-                    width: `${(amount / Math.max(summary.spent, 1)) * 100}%`,
+                    width: `${
+                      (Math.abs(amount) /
+                        Math.max(
+                          summary.byCategory.reduce(
+                            (sum, [, value]) => sum + Math.abs(value),
+                            0,
+                          ),
+                          1,
+                        )) *
+                      100
+                    }%`,
                   }}
                 />
               </div>

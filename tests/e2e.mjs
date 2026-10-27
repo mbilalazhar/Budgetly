@@ -150,15 +150,17 @@ let mongo, server, browser, activePage;
   await page.getByLabel("Current balance (PKR)", { exact: true }).fill("100");
   await save();
   await openTab("Savings");
-  await page.getByRole("button", { name: "New goal", exact: true }).click();
+  await page.getByRole("button", { name: "Add savings", exact: true }).click();
   await page
-    .getByLabel("What are you saving for?", { exact: true })
+    .getByLabel("Savings name", { exact: true })
     .fill("A little getaway");
-  await page.getByLabel("Target amount (PKR)", { exact: true }).fill("500");
+  await page
+    .getByLabel("Target amount (optional, PKR)", { exact: true })
+    .fill("500");
   await save();
   for (const [action, amount] of [
     ["Add money", "200"],
-    ["Spend", "50"],
+    ["Spend savings", "50"],
     ["Release", "25"],
   ]) {
     await page
@@ -359,7 +361,10 @@ let mongo, server, browser, activePage;
   // Monthly budgets and category totals react to actual and undone spending.
   await openTab("More");
   await page
-    .getByRole("button", { name: "Monthly budget", exact: true })
+    .getByRole("button", { name: "Spending pots", exact: true })
+    .click();
+  await page
+    .getByText("Optional monthly spending limits & reports", { exact: true })
     .click();
   await page.getByRole("button", { name: "Set a limit", exact: true }).click();
   await page.getByLabel("Monthly limit (PKR)", { exact: true }).fill("60");
@@ -444,6 +449,298 @@ let mongo, server, browser, activePage;
   });
   assert.equal(bad.status(), 400);
   assert.equal((await read()).accounts[0].balance, 120125);
+  // Spending pots reserve existing money and debit whichever account paid.
+  await page
+    .getByRole("button", { name: "Refresh budget", exact: true })
+    .click();
+  await openTab("More");
+  await page
+    .getByRole("button", { name: "Spending pots", exact: true })
+    .click();
+  await page.getByRole("button", { name: "New pot", exact: true }).click();
+  await page.getByLabel("Pot name", { exact: true }).fill("Food money");
+  await page
+    .getByLabel("Category", { exact: true })
+    .selectOption("Food & drinks");
+  await page.getByLabel("Reserve now (PKR)", { exact: true }).fill("100");
+  await save();
+  b = await read();
+  const bankBeforePot = b.accounts[0].balance;
+  const cashBeforePot = b.accounts[1].balance;
+  assert.equal(b.pots[0].balance, 10000);
+  await page
+    .getByRole("button", { name: "Spend from pot", exact: true })
+    .click();
+  await page.getByLabel("Amount (PKR)", { exact: true }).fill("10");
+  await page
+    .getByLabel("What was it for?", { exact: true })
+    .fill("Food from cash");
+  await page
+    .getByLabel("Paid from", { exact: true })
+    .selectOption(b.accounts[1].id);
+  assert.equal(
+    await page.getByLabel("Use money from", { exact: true }).inputValue(),
+    b.pots[0].id,
+  );
+  await save();
+  b = await read();
+  assert.equal(b.pots[0].balance, 9000);
+  assert.equal(b.accounts[0].balance, bankBeforePot);
+  assert.equal(b.accounts[1].balance, cashBeforePot - 1000);
+  await page
+    .getByRole("button", { name: "Add transaction", exact: true })
+    .click();
+  await page.getByLabel("Amount (PKR)", { exact: true }).fill("5");
+  await page
+    .getByLabel("What was it for?", { exact: true })
+    .fill("Food auto pot");
+  await page
+    .getByLabel("Category", { exact: true })
+    .selectOption("Food & drinks");
+  await save();
+  b = await read();
+  assert.equal(b.pots[0].balance, 8500);
+  await page
+    .getByRole("button", { name: "Spend from pot", exact: true })
+    .click();
+  await page.getByLabel("Amount (PKR)", { exact: true }).fill("86");
+  await page
+    .getByLabel("What was it for?", { exact: true })
+    .fill("Too much food");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "pot does not have enough" })
+    .waitFor();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  assert.equal((await read()).pots[0].balance, 8500);
+  await page
+    .getByRole("button", { name: "Add / release", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Release money", exact: true })
+    .click();
+  await page.getByLabel("Amount (PKR)", { exact: true }).fill("5");
+  await save();
+  assert.equal((await read()).pots[0].balance, 8000);
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+      `Pot overflow ${width}`,
+    );
+    await page.screenshot({
+      path: screenshotPath(`spending-pots-${width}.png`),
+      fullPage: true,
+    });
+  }
+  await page.reload();
+  await page.getByText("Spendable balance", { exact: true }).waitFor();
+  b = await read();
+  assert.equal(b.pots[0].balance, 8000);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openTab("Savings");
+  await page.getByRole("button", { name: "Add savings", exact: true }).click();
+  await page
+    .getByLabel("Savings name", { exact: true })
+    .fill("Existing savings");
+  await page.getByLabel("Already saved (PKR)", { exact: true }).fill("100");
+  await save();
+  b = await read();
+  const savings = b.goals.find((g) => g.name === "Existing savings");
+  assert.equal(savings.target, 0);
+  assert.equal(savings.allocations[0].amount, 10000);
+  const beforeSavingsSpend = b.accounts[0].balance;
+  await page
+    .locator(".goal-card")
+    .filter({ hasText: "Existing savings" })
+    .getByRole("button", { name: "Manage savings" })
+    .click();
+  await page
+    .getByRole("button", { name: "Spend savings", exact: true })
+    .click();
+  await page.getByLabel("Amount (PKR)", { exact: true }).fill("10");
+  await page.getByLabel("Category", { exact: true }).selectOption("Health");
+  await save();
+  b = await read();
+  assert.equal(
+    b.goals.find((g) => g.id === savings.id).allocations[0].amount,
+    9000,
+  );
+  assert.equal(b.accounts[0].balance, beforeSavingsSpend - 1000);
+  assert.equal(b.pots[0].balance, 8000);
+  await page.screenshot({
+    path: screenshotPath("savings-balances.png"),
+    fullPage: true,
+  });
+  // Move protected savings directly; the funds remain savings in the destination.
+  await page
+    .locator(".goal-card")
+    .filter({ hasText: "Existing savings" })
+    .getByRole("button", { name: "Move savings to another account" })
+    .click();
+  await page.getByLabel("Amount (PKR)", { exact: true }).fill("20");
+  await page
+    .getByLabel("Move savings to", { exact: true })
+    .selectOption(b.accounts[1].id);
+  await save();
+  b = await read();
+  assert.equal(
+    b.goals
+      .find((g) => g.id === savings.id)
+      .allocations.find((a) => a.accountId === b.accounts[1].id).amount,
+    2000,
+  );
+  await openTab("Activity");
+  await undo("Moved savings: Existing savings");
+  b = await read();
+  assert.equal(
+    b.goals
+      .find((g) => g.id === savings.id)
+      .allocations.find((a) => a.accountId === b.accounts[0].id).amount,
+    9000,
+  );
+
+  // Reallocate directly between pots, then inspect the source pot's history.
+  await openTab("More");
+  await page
+    .getByRole("button", { name: "Spending pots", exact: true })
+    .click();
+  await page.getByRole("button", { name: "New pot", exact: true }).click();
+  await page.getByLabel("Pot name", { exact: true }).fill("Travel money");
+  await page.getByLabel("Category", { exact: true }).selectOption("Transport");
+  await page.getByLabel("Reserve now (PKR)", { exact: true }).fill("0");
+  await save();
+  const sourcePot = page
+    .locator(".goal-card")
+    .filter({ hasText: "Food money" });
+  await sourcePot
+    .getByRole("button", { name: "Add / release", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Move to pot", exact: true }).click();
+  await page.getByLabel("Amount (PKR)", { exact: true }).fill("10");
+  await save();
+  b = await read();
+  assert.equal(b.pots.find((p) => p.name === "Food money").balance, 7000);
+  assert.equal(b.pots.find((p) => p.name === "Travel money").balance, 1000);
+  await sourcePot
+    .getByRole("button", { name: "View pot activity", exact: true })
+    .click();
+  assert.equal(
+    await page
+      .getByLabel("Filter by spending pot", { exact: true })
+      .inputValue(),
+    b.pots[0].id,
+  );
+  assert.equal(
+    await page
+      .locator(".transaction-button")
+      .filter({ hasText: "Monthly salary" })
+      .count(),
+    0,
+  );
+
+  // Refund part of a pot-funded expense into a different account.
+  await page
+    .locator(".transaction-button")
+    .filter({ hasText: "Food from cash" })
+    .click();
+  await page
+    .getByRole("button", { name: "Record refund", exact: true })
+    .click();
+  await page.getByLabel("Amount (PKR)", { exact: true }).fill("4");
+  await page
+    .getByLabel("Refund received into", { exact: true })
+    .selectOption(b.accounts[0].id);
+  await save();
+  const originalFood = b.transactions.find((t) => t.title === "Food from cash");
+  b = await read();
+  assert.equal(b.pots[0].balance, 7400);
+  assert.equal(
+    b.transactions.find((t) => t.refundOfId === originalFood.id).amount,
+    400,
+  );
+  await page
+    .locator(".transaction-button")
+    .filter({ hasText: "Refund: Food from cash" })
+    .click();
+  await page.getByText("Refund of", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page
+    .locator(".transaction-button")
+    .filter({ hasText: "Food from cash" })
+    .filter({ hasNotText: "Refund:" })
+    .click();
+  await page
+    .getByText("This expense has recorded refunds.", { exact: false })
+    .waitFor();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Edit transaction", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Undo transaction", exact: true })
+      .count(),
+    0,
+  );
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await undo("Refund: Food from cash");
+  assert.equal((await read()).pots[0].balance, 7000);
+  await page
+    .getByRole("button", { name: "Clear filters", exact: true })
+    .click();
+  assert.equal(
+    await page
+      .getByLabel("Filter by spending pot", { exact: true })
+      .inputValue(),
+    "",
+  );
+
+  await openTab("Home");
+  await page
+    .locator(".due-soon")
+    .getByText("Music subscription", { exact: true })
+    .waitFor();
+  await page
+    .locator(".due-soon .recurring-row")
+    .filter({ hasText: "Music subscription" })
+    .getByRole("button", { name: "Record payment", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Confirm payment", exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page.getByRole("button", { name: "Add income", exact: true }).click();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Income", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page.locator(".money-help > summary").click();
+  await page
+    .getByRole("heading", { name: "Where every bit belongs", exact: true })
+    .waitFor();
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+      `Guide overflow ${width}`,
+    );
+    await page.screenshot({
+      path: screenshotPath(`money-guide-${width}.png`),
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
   const cookie = (await context.cookies()).find(
     (c) => c.name === "budgetly_session",
   );
@@ -457,7 +754,7 @@ let mongo, server, browser, activePage;
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: audit regressions (transaction corrections/undo, linked undo, monthly budgets, CSV, debt editing, stale reconciliation, LAN request IDs), plus login/logout, API authorization and origin checks, accounts, income, expenses, transfers, savings reserve/spend/release, recurring payments, loans and partial repayments, MongoDB concurrency/idempotency, balance corrections, persistence after reload, and responsive widths 320/390/768/1440.",
+    "PASS: beginner guide, quick actions, due reminders, pot history, pot transfers, protected savings transfers, partial refunds and undo, spending pots, automatic category spending, pot overspend protection, releases, persistence, existing savings without targets, explicit savings spending, audit regressions (transaction corrections/undo, linked undo, monthly budgets, CSV, debt editing, stale reconciliation, LAN request IDs), plus login/logout, API authorization and origin checks, accounts, income, expenses, transfers, savings reserve/spend/release, recurring payments, loans and partial repayments, MongoDB concurrency/idempotency, balance corrections, persistence after reload, and responsive widths 320/390/768/1440.",
   );
 })()
   .catch(async (error) => {
