@@ -9,10 +9,14 @@ import {
 } from "react";
 import {
   available,
+  balanceSummary,
+  type SpendingPot,
   categories,
   colors,
   currencies,
   isSpending,
+  spendingAmount,
+  refundableAmount,
   type SpendingLimit,
   goalBalance,
   reserved,
@@ -24,6 +28,8 @@ import {
   type Transaction,
 } from "@/lib/types";
 import { Brand, Icon, type IconName } from "./icons";
+import { MoneyGuide, DueSoon } from "./money-help";
+import { SpendingPots } from "./spending-pots";
 import { SpendingPlan } from "./spending-plan";
 import { TransactionDetails } from "./transaction-details";
 import { monthlySummary, transactionsCsv } from "@/lib/reports";
@@ -41,7 +47,15 @@ type Tab =
   | "budgets";
 type Modal = {
   type: string;
-  item?: Account | Goal | Debt | Recurring | Transaction | SpendingLimit;
+  item?:
+    | Account
+    | Goal
+    | Debt
+    | Recurring
+    | Transaction
+    | SpendingLimit
+    | SpendingPot;
+  potId?: string;
   month?: string;
   preset?: string;
 };
@@ -49,10 +63,10 @@ const navigation: { id: Tab; label: string; icon: IconName }[] = [
   { id: "overview", label: "Overview", icon: "home" },
   { id: "transactions", label: "Transactions", icon: "arrows" },
   { id: "accounts", label: "Accounts", icon: "wallet" },
-  { id: "savings", label: "Savings goals", icon: "leaf" },
+  { id: "savings", label: "Savings", icon: "leaf" },
   { id: "recurring", label: "Recurring expenses", icon: "repeat" },
   { id: "debts", label: "Debts & dues", icon: "people" },
-  { id: "budgets", label: "Monthly budget", icon: "wallet" },
+  { id: "budgets", label: "Spending pots", icon: "wallet" },
 ];
 function today() {
   const d = new Date();
@@ -160,6 +174,7 @@ export default function BudgetApp() {
   const [toast, setToast] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [potFilter, setPotFilter] = useState("");
   const [accountFilter, setAccountFilter] = useState("");
   const [month, setMonth] = useState("");
   const [day, setDay] = useState("");
@@ -283,6 +298,7 @@ export default function BudgetApp() {
     );
   const total = budget?.accounts.reduce((sum, a) => sum + a.balance, 0) ?? 0;
   const saved = budget?.goals.reduce((sum, g) => sum + goalBalance(g), 0) ?? 0;
+  const potTotal = budget ? balanceSummary(budget).pots : 0;
   const currency = budget?.currency || "PKR";
   const fmt = (n: number) => money(n, currency);
   const currentMonth = today().slice(0, 7);
@@ -312,6 +328,7 @@ export default function BudgetApp() {
       (!accountFilter ||
         t.accountId === accountFilter ||
         t.toAccountId === accountFilter) &&
+      (!potFilter || t.potId === potFilter || t.toPotId === potFilter) &&
       (!month || t.date.startsWith(month)) &&
       (!day || t.date === day) &&
       (filter === "voided"
@@ -351,15 +368,17 @@ export default function BudgetApp() {
         <strong>{fmt(a.balance)}</strong>
         <span className="account-foot">
           {reserved(budget!, a.id)
-            ? `${fmt(available(budget!, a.id))} available`
-            : "Ready for your everyday"}
+            ? `${fmt(available(budget!, a.id))} outside savings`
+            : "Current account balance"}
         </span>
       </button>
     );
   }
   function goalCard(g: Goal) {
     const balance = goalBalance(g);
-    const percent = Math.min(100, Math.round((balance / g.target) * 100));
+    const percent = g.target
+      ? Math.min(100, Math.round((balance / g.target) * 100))
+      : 0;
     return (
       <article className={`goal-card ${g.color}`} key={g.id}>
         <div className="row-between">
@@ -377,25 +396,31 @@ export default function BudgetApp() {
         <h3>{g.name}</h3>
         <div className="goal-amount">
           <strong>{fmt(balance)}</strong>
-          <span>of {fmt(g.target)}</span>
+          <span>
+            {g.target ? `of ${fmt(g.target)}` : "saved and protected"}
+          </span>
         </div>
-        <div
-          className="progress"
-          role="progressbar"
-          aria-label={g.name}
-          aria-valuenow={percent}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <span style={{ width: `${percent}%` }} />
-        </div>
+        {g.target > 0 && (
+          <div
+            className="progress"
+            role="progressbar"
+            aria-label={g.name}
+            aria-valuenow={percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <span style={{ width: `${percent}%` }} />
+          </div>
+        )}
         <div className="row-between goal-caption">
           <span>
-            {percent === 100
-              ? "Goal reached. You did it!"
-              : "A little closer, every time."}
+            {g.target
+              ? percent === 100
+                ? "Target reached"
+                : "No monthly deadline"
+              : "Included in total, excluded from spending"}
           </span>
-          <b>{percent}%</b>
+          {g.target > 0 && <b>{percent}%</b>}
         </div>
         <button
           className="button secondary full small"
@@ -404,6 +429,28 @@ export default function BudgetApp() {
           <Icon name="plus" size={15} />
           Manage savings
         </button>
+        {balance > 0 && budget!.accounts.length > 1 && (
+          <button
+            className="text-button savings-transfer"
+            onClick={() => setModal({ type: "goal-transfer", item: g })}
+          >
+            Move savings to another account
+            <Icon name="arrows" size={15} />
+          </button>
+        )}
+        <div className="savings-locations">
+          {g.allocations
+            .filter((a) => a.amount > 0)
+            .map((a) => (
+              <span key={a.accountId}>
+                {
+                  budget!.accounts.find((account) => account.id === a.accountId)
+                    ?.name
+                }
+                : {fmt(a.amount)}
+              </span>
+            ))}
+        </div>
       </article>
     );
   }
@@ -444,9 +491,17 @@ export default function BudgetApp() {
   }
   function transactionRow(t: Transaction) {
     const positive =
-      ["income", "debt-in", "release"].includes(t.type) ||
+      ["income", "debt-in", "release", "refund"].includes(t.type) ||
       (t.type === "adjustment" && t.amount >= 0);
-    const neutral = ["transfer", "saving", "release"].includes(t.type);
+    const neutral = [
+      "transfer",
+      "saving",
+      "release",
+      "reserve",
+      "reserve-release",
+      "reserve-transfer",
+      "saving-transfer",
+    ].includes(t.type);
     return (
       <button
         type="button"
@@ -463,7 +518,7 @@ export default function BudgetApp() {
           <strong>{t.title}</strong>
           <span>
             {budget?.accounts.find((a) => a.id === t.accountId)?.name ||
-              "Account"}
+              (t.type.startsWith("reserve") ? "Money allocation" : "Account")}
             {t.toAccountId
               ? ` → ${budget?.accounts.find((a) => a.id === t.toAccountId)?.name}`
               : ` · ${t.category}`}
@@ -592,17 +647,19 @@ export default function BudgetApp() {
               <p>
                 {
                   {
-                    overview: "Let’s give your money a little direction.",
+                    overview:
+                      "See what you have, what’s reserved, and what you can spend.",
                     accounts: "Every account. One clear picture.",
                     transactions:
                       "The little things add up. Keep them in view.",
-                    savings: "Make room for the things that matter.",
+                    savings:
+                      "Money you already have, protected from everyday spending.",
                     recurring: "Your regular expenses, without the surprises.",
                     budgets:
-                      "A plan for the everyday, with room for real life.",
+                      "Reserve money for tasks, then spend from it as you go.",
                     debts: "Keep track of what’s owed, both ways.",
                     settings: "A few things to make Budgetly yours.",
-                    more: "Recurring expenses, debts, and your preferences.",
+                    more: "Spending pots, bills, debts, and your preferences.",
                   }[tab]
                 }
               </p>
@@ -651,20 +708,64 @@ export default function BudgetApp() {
             <>
               {tab === "overview" && (
                 <>
+                  <div className="quick-actions" aria-label="Quick actions">
+                    <button
+                      className="button primary small"
+                      onClick={() => openTransaction("expense")}
+                    >
+                      <Icon name="up" size={16} />
+                      Add expense
+                    </button>
+                    <button
+                      className="button secondary small"
+                      onClick={() => openTransaction("income")}
+                    >
+                      <Icon name="down" size={16} />
+                      Add income
+                    </button>
+                    <button
+                      className="button secondary small"
+                      onClick={() =>
+                        setModal({
+                          type: budget.accounts.length ? "pot" : "account",
+                        })
+                      }
+                    >
+                      <Icon name="wallet" size={16} />
+                      Reserve money
+                    </button>
+                    <button
+                      className="button secondary small"
+                      onClick={() =>
+                        budget.accounts.length > 1
+                          ? openTransaction("transfer")
+                          : setModal({ type: "account" })
+                      }
+                    >
+                      <Icon name="arrows" size={16} />
+                      Transfer money
+                    </button>
+                  </div>
+                  <MoneyGuide
+                    budget={budget}
+                    fmt={fmt}
+                    go={(step) =>
+                      step === "expense" ? openTransaction() : navigate(step)
+                    }
+                  />
                   <div className="overview-top">
                     <section className="balance-card">
                       <div className="row-between">
                         <span className="balance-label">
                           <span className="status-dot" />
-                          Available to spend
+                          Spendable balance
                         </span>
                         <span className="currency-chip">{currency}</span>
                       </div>
                       <div className="balance-number">{fmt(total - saved)}</div>
                       <p>
-                        Across {budget.accounts.length} account
-                        {budget.accounts.length !== 1 ? "s" : ""}, after your
-                        savings.
+                        Includes {fmt(potTotal)} reserved in spending pots.
+                        Savings are excluded.
                       </p>
                       <div className="balance-divider" />
                       <div className="balance-stats">
@@ -675,7 +776,7 @@ export default function BudgetApp() {
                         <div>
                           <span>
                             <Icon name="leaf" size={14} />
-                            Set aside
+                            Savings
                           </span>
                           <strong>{fmt(saved)}</strong>
                         </div>
@@ -717,10 +818,10 @@ export default function BudgetApp() {
                           <Icon name="up" size={18} />
                         </span>
                         <div>
-                          <span>Money out</span>
+                          <span>Net spending</span>
                           <strong>{fmt(spent)}</strong>
                         </div>
-                        <span className="mini-label">Expenses</span>
+                        <span className="mini-label">After refunds</span>
                       </div>
                       <div className="month-bottom">
                         {spent > income
@@ -740,20 +841,36 @@ export default function BudgetApp() {
                     </span>
                     <span>
                       <strong>
-                        {monthSummary.limits.find(
-                          (l) => l.category === "All spending",
-                        )
-                          ? `${fmt(monthSummary.limits.find((l) => l.category === "All spending")!.remaining)} remaining in this month’s budget`
-                          : "Give your spending a monthly plan"}
+                        {fmt(total - saved - potTotal)} free to assign or spend
                       </strong>
                       <small>
-                        {monthSummary.limits.some((l) => l.remaining < 0)
-                          ? "A spending limit needs your attention."
-                          : "Track your limits and see where your money goes."}
+                        {fmt(potTotal)} reserved for tasks · Open spending pots
                       </small>
                     </span>
                     <Icon name="arrow" size={18} />
                   </button>
+                  <DueSoon
+                    budget={budget}
+                    today={today()}
+                    fmt={fmt}
+                    pay={(kind, id) => {
+                      if (!budget.accounts.length) {
+                        setModal({ type: "account" });
+                        return;
+                      }
+                      setModal(
+                        kind === "bill"
+                          ? {
+                              type: "pay-recurring",
+                              item: budget.recurring.find((r) => r.id === id),
+                            }
+                          : {
+                              type: "debt-pay",
+                              item: budget.debts.find((d) => d.id === id),
+                            },
+                      );
+                    }}
+                  />
                   {!budget.accounts.length && (
                     <div className="onboarding">
                       <span className="tile mint">
@@ -817,8 +934,8 @@ export default function BudgetApp() {
                     </section>
                     <section className="panel spending-card">
                       <SectionTitle
-                        title="Spending this week"
-                        detail="A day-by-day look at money out."
+                        title="Net spending this week"
+                        detail="Expenses minus refunds on the day recorded."
                       />
                       <SpendingChart transactions={transactions} fmt={fmt} />
                     </section>
@@ -849,7 +966,7 @@ export default function BudgetApp() {
                     </section>
                     <section className="panel">
                       <SectionTitle
-                        title="Something to save for"
+                        title="Protected savings"
                         action={() => navigate("savings")}
                       />
                       {budget.goals.length ? (
@@ -872,21 +989,25 @@ export default function BudgetApp() {
                               <div className="progress">
                                 <span
                                   style={{
-                                    width: `${Math.min(100, (goalBalance(g) / g.target) * 100)}%`,
+                                    width: `${g.target ? Math.min(100, (goalBalance(g) / g.target) * 100) : 0}%`,
                                   }}
                                 />
                               </div>
-                              <small>of {fmt(g.target)}</small>
+                              <small>
+                                {g.target
+                                  ? `of ${fmt(g.target)}`
+                                  : "Protected savings"}
+                              </small>
                             </button>
                           ))}
                         </div>
                       ) : (
                         <Empty
                           icon="leaf"
-                          title="Big plans start small"
-                          description="A rainy day, a new adventure, or something just for you."
+                          title="Keep your savings separate"
+                          description="Record money you already keep aside. Your total includes it; everyday spending does not."
                           action={() => setModal({ type: "goal" })}
-                          label="Create a goal"
+                          label="Add savings"
                         />
                       )}
                     </section>
@@ -894,21 +1015,47 @@ export default function BudgetApp() {
                 </>
               )}
               {tab === "budgets" && (
-                <SpendingPlan
-                  budget={budget}
-                  currentMonth={currentMonth}
-                  fmt={fmt}
-                  edit={(month, category) =>
-                    setModal({
-                      type: "limit",
-                      month,
-                      preset: category,
-                      item: budget.spendingLimits?.find(
-                        (l) => l.month === month && l.category === category,
-                      ),
-                    })
-                  }
-                />
+                <>
+                  <SpendingPots
+                    history={(pot) => {
+                      setPotFilter(pot.id);
+                      setAccountFilter("");
+                      setQuery("");
+                      setMonth("");
+                      setDay("");
+                      setFilter("all");
+                      navigate("transactions");
+                    }}
+                    budget={budget}
+                    fmt={fmt}
+                    create={() => setModal({ type: "pot" })}
+                    edit={(pot) => setModal({ type: "pot", item: pot })}
+                    manage={(pot) => setModal({ type: "pot-move", item: pot })}
+                    spend={(pot) =>
+                      setModal({ type: "transaction", potId: pot.id })
+                    }
+                  />
+                  <details className="panel optional-limits">
+                    <summary>
+                      Optional monthly spending limits & reports
+                    </summary>
+                    <SpendingPlan
+                      budget={budget}
+                      currentMonth={currentMonth}
+                      fmt={fmt}
+                      edit={(month, category) =>
+                        setModal({
+                          type: "limit",
+                          month,
+                          preset: category,
+                          item: budget.spendingLimits?.find(
+                            (l) => l.month === month && l.category === category,
+                          ),
+                        })
+                      }
+                    />
+                  </details>
+                </>
               )}
               {tab === "accounts" && (
                 <>
@@ -920,13 +1067,13 @@ export default function BudgetApp() {
                     />
                     <Summary
                       icon="leaf"
-                      label="Reserved for goals"
+                      label="Protected savings"
                       value={fmt(saved)}
                       color="purple"
                     />
                     <Summary
                       icon="check"
-                      label="Available to spend"
+                      label="Spendable (includes pots)"
                       value={fmt(total - saved)}
                       color="blue"
                     />
@@ -953,7 +1100,8 @@ export default function BudgetApp() {
                     <p>
                       Tap an account to edit it or correct its balance.
                       Transfers move available money between accounts without
-                      changing your total.
+                      changing your total or spending pots. Pots track a purpose
+                      across accounts.
                     </p>
                   </div>
                   {budget.accounts.length > 1 && (
@@ -994,6 +1142,21 @@ export default function BudgetApp() {
                       {budget.accounts.map((a) => (
                         <option key={a.id} value={a.id}>
                           {a.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Filter by spending pot"
+                      value={potFilter}
+                      onChange={(e) => {
+                        setPotFilter(e.target.value);
+                        setVisibleCount(30);
+                      }}
+                    >
+                      <option value="">All spending pots</option>
+                      {budget.pots?.map((p) => (
+                        <option value={p.id} key={p.id}>
+                          {p.name}
                         </option>
                       ))}
                     </select>
@@ -1045,6 +1208,7 @@ export default function BudgetApp() {
                         setQuery("");
                         setFilter("all");
                         setAccountFilter("");
+                        setPotFilter("");
                         setMonth("");
                         setDay("");
                         setVisibleCount(30);
@@ -1060,6 +1224,7 @@ export default function BudgetApp() {
                       "income",
                       "transfer",
                       "saving",
+                      "refund",
                       "voided",
                     ].map((f) => (
                       <button
@@ -1132,15 +1297,15 @@ export default function BudgetApp() {
                       <strong>{fmt(saved)}</strong>
                     </div>
                     <p>
-                      For your future self.
+                      Included in your total balance.
                       <br />
-                      One little step at a time.
+                      Protected from everyday spending.
                     </p>
                   </div>
                   <SectionTitle
-                    title="Your goals"
+                    title="Your savings"
                     action={() => setModal({ type: "goal" })}
-                    actionLabel="New goal"
+                    actionLabel="Add savings"
                   />
                   {budget.goals.length ? (
                     <div className="goal-grid">
@@ -1150,19 +1315,20 @@ export default function BudgetApp() {
                     <section className="panel">
                       <Empty
                         icon="leaf"
-                        title="What are you dreaming of?"
-                        description="Create a goal with a purpose and a target. Reserve money from any of your accounts, then record when you spend it."
+                        title="Already have money saved?"
+                        description="Add the amount you already keep as savings. It stays in your total balance and is excluded from everyday spending. A target is optional."
                         action={() => setModal({ type: "goal" })}
-                        label="Create your first goal"
+                        label="Add your savings"
                       />
                     </section>
                   )}
                   <div className="hint">
                     <Icon name="leaf" size={17} />
                     <p>
-                      Savings stay in their original accounts, reserved for your
-                      goals. Spending savings reduces that account’s balance;
-                      releasing savings makes the money available again.
+                      Savings stay in the accounts that hold them. There is no
+                      monthly saving requirement. Spending savings reduces that
+                      account’s balance; releasing savings makes the money
+                      available again.
                     </p>
                   </div>
                 </>
@@ -1475,6 +1641,7 @@ export default function BudgetApp() {
           close={() => setModal(null)}
           edit={() => setModal({ type: "transaction-edit", item: modal.item })}
           undo={() => setModal({ type: "transaction-undo", item: modal.item })}
+          refund={() => setModal({ type: "refund", item: modal.item })}
         />
       )}
       {modal && budget && modal.type !== "details" && (
@@ -1538,10 +1705,10 @@ function SpendingChart({
       label: d.toLocaleDateString("en", { weekday: "short" }),
       total: transactions
         .filter((t) => t.date === key && spending(t))
-        .reduce((s, t) => s + t.amount, 0),
+        .reduce((s, t) => s + spendingAmount(t), 0),
     };
   });
-  const max = Math.max(1, ...days.map((d) => d.total));
+  const max = Math.max(1, ...days.map((d) => Math.abs(d.total)));
   return (
     <>
       <div className="week-total">
@@ -1557,10 +1724,10 @@ function SpendingChart({
           <div className={`chart-column ${i === 6 ? "today" : ""}`} key={i}>
             <div className="chart-bar-track">
               <div
-                className="chart-bar"
+                className={`chart-bar ${d.total < 0 ? "refund-bar" : ""}`}
                 title={`${d.label}: ${fmt(d.total)}`}
                 style={{
-                  height: `${d.total ? Math.max(4, (d.total / max) * 100) : 2}%`,
+                  height: `${d.total ? Math.max(4, (Math.abs(d.total) / max) * 100) : 2}%`,
                 }}
               />
             </div>
@@ -1761,8 +1928,14 @@ function BudgetModal({
       moveMoney: "false",
       mode: "",
       month: modal.month || today().slice(0, 7),
+      potId: modal.potId || "auto",
+      toPotId: budget.pots?.find((p) => p.id !== item?.id)?.id || "",
     };
     if (modal.type === "goal-move") base.type = "saving";
+    if (modal.type === "pot-move") base.type = "reserve";
+    if (modal.potId)
+      base.category =
+        budget.pots?.find((p) => p.id === modal.potId)?.category || "Other";
     if (modal.type === "limit") base.category = modal.preset || "All spending";
     if (modal.type === "debt") base.due = "";
     if (item) {
@@ -1770,15 +1943,31 @@ function BudgetModal({
         if (typeof value === "string" || typeof value === "number")
           base[key] = String(value);
       });
-      if ("balance" in item) {
+      if ("balance" in item && modal.type === "account") {
         base.balance = amountInput(item.balance);
         base.accountId = item.id;
       }
-      if ("target" in item) base.target = amountInput(item.target);
+      if ("target" in item)
+        base.target = item.target ? amountInput(item.target) : "";
+      if (modal.type === "transaction-edit")
+        base.potId = (item as Transaction).potId || "unassigned";
       if ("amount" in item) base.amount = amountInput(item.amount);
       if (modal.type === "debt-pay" && "paid" in item)
         base.amount = amountInput(item.amount - item.paid);
-      if (modal.type === "goal-move") base.amount = "";
+      if (["goal-move", "goal-transfer"].includes(modal.type)) base.amount = "";
+      if (modal.type === "goal-transfer") {
+        base.accountId =
+          (item as Goal).allocations.find((a) => a.amount > 0)?.accountId ||
+          base.accountId;
+        base.toAccountId =
+          budget.accounts.find((a) => a.id !== base.accountId)?.id || "";
+      }
+      if (modal.type === "refund") {
+        base.amount = amountInput(
+          refundableAmount(budget, item as Transaction),
+        );
+        base.date = today();
+      }
       if (!["transaction-edit", "debt-edit"].includes(modal.type))
         base.note = "";
     }
@@ -1794,19 +1983,45 @@ function BudgetModal({
     };
   }, []);
   const set = (name: string, value: string) => {
-    setFields((previous) => ({ ...previous, [name]: value }));
+    setFields((previous) => {
+      const next = { ...previous, [name]: value };
+      if (name === "category") next.potId = "auto";
+      if (name === "accountId" && value === previous.toAccountId)
+        next.toAccountId =
+          budget.accounts.find((a) => a.id !== value)?.id || "";
+      if (
+        name === "type" &&
+        modal.type === "goal-move" &&
+        value !== "saving" &&
+        !(item as Goal).allocations.some(
+          (a) => a.accountId === next.accountId && a.amount > 0,
+        )
+      )
+        next.accountId =
+          (item as Goal).allocations.find((a) => a.amount > 0)?.accountId ||
+          next.accountId;
+      if (name === "potId") {
+        const pot = budget.pots?.find((p) => p.id === value);
+        if (pot) next.category = pot.category;
+      }
+      return next;
+    });
     setError("");
   };
   const fmt = (amount: number) => money(amount, budget.currency);
   const titles: Record<string, string> = {
     account: item ? "A little account upkeep." : "Give your money a home.",
-    transaction: "Every little bit counts.",
+    transaction: "Record money in or out",
+    pot: item ? "Edit spending pot" : "Reserve money for a task",
+    "pot-move": "Manage reserved money",
+    "goal-transfer": "Move protected savings",
+    refund: "Record money returned",
     "transaction-edit": "Make the details right.",
     "transaction-undo": "Undo this transaction?",
     "debt-edit": "Keep the details up to date.",
     limit: "A little direction for your money.",
-    goal: item ? "Keep your goal in sight." : "Something worth saving for.",
-    "goal-move": "A step toward your future.",
+    goal: item ? "Edit savings" : "Add your savings",
+    "goal-move": "Manage your savings",
     recurring: item
       ? "Keep your regulars in order."
       : "Make room for the regulars.",
@@ -1818,11 +2033,15 @@ function BudgetModal({
   const labels: Record<string, string> = {
     account: item ? "Edit account" : "New account",
     transaction: "New transaction",
+    pot: "Spending pot",
+    "pot-move": (item as SpendingPot)?.name,
+    "goal-transfer": (item as Goal)?.name,
+    refund: "Refund an expense",
     "transaction-edit": "Correct transaction",
     "transaction-undo": "Reverse an entry",
     "debt-edit": "Edit debt",
     limit: "Monthly spending limit",
-    goal: item ? "Edit goal" : "New savings goal",
+    goal: item ? "Edit savings" : "Savings balance",
     "goal-move": (item as Goal)?.name,
     recurring: item ? "Edit expense" : "Recurring expense",
     "pay-recurring": "Record a payment",
@@ -1835,6 +2054,8 @@ function BudgetModal({
       "transaction",
       "transaction-edit",
       "goal-move",
+      "goal-transfer",
+      "refund",
       "recurring",
       "pay-recurring",
       "debt-pay",
@@ -1905,10 +2126,29 @@ function BudgetModal({
     select(
       label,
       name,
-      budget.accounts.map((a) => ({
-        value: a.id,
-        label: `${a.name} · ${fmt(available(budget, a.id))} available`,
-      })),
+      budget.accounts
+        .filter((a) => name !== "toAccountId" || a.id !== fields.accountId)
+        .map((a) => {
+          const savedHere =
+            (modal.type === "goal-transfer" ||
+              (modal.type === "goal-move" && fields.type !== "saving")) &&
+            name === "accountId";
+          const receiving =
+            name === "toAccountId" ||
+            modal.type === "refund" ||
+            (["transaction", "transaction-edit"].includes(modal.type) &&
+              fields.type === "income");
+          const amount = savedHere
+            ? (item as Goal).allocations.find((x) => x.accountId === a.id)
+                ?.amount || 0
+            : receiving
+              ? a.balance
+              : available(budget, a.id);
+          return {
+            value: a.id,
+            label: `${a.name} · ${fmt(amount)} ${savedHere ? "saved here" : receiving ? "current balance" : "outside savings"}`,
+          };
+        }),
     );
   const amountField = (
     name = "amount",
@@ -1933,6 +2173,53 @@ function BudgetModal({
       "category",
       categories.map((c) => ({ value: c, label: c })),
     );
+  const fundingSelect = () => {
+    const matches = (budget.pots || []).filter(
+      (p) => p.category === fields.category,
+    );
+    const pot =
+      fields.potId === "auto"
+        ? matches.length === 1
+          ? matches[0]
+          : undefined
+        : budget.pots?.find((p) => p.id === fields.potId);
+    return (
+      <>
+        {select("Use money from", "potId", [
+          {
+            value: "auto",
+            label:
+              matches.length === 1
+                ? `Category pot: ${matches[0].name}`
+                : matches.length > 1
+                  ? "Choose a pot below"
+                  : "Unassigned money (no category pot)",
+          },
+          {
+            value: "unassigned",
+            label: `Unassigned money · ${fmt(balanceSummary(budget).free)}`,
+          },
+          ...(budget.pots || [])
+            .filter(
+              (p) =>
+                modal.type !== "pay-recurring" ||
+                p.category === fields.category,
+            )
+            .map((p) => ({
+              value: p.id,
+              label: `${p.name} · ${fmt(p.balance)} left`,
+            })),
+        ])}
+        <p className="form-hint">
+          {pot
+            ? `${fmt(pot.balance)} left in ${pot.name}. This expense reduces the pot and the account you pay from together.`
+            : matches.length > 1 && fields.potId === "auto"
+              ? "There is more than one pot for this category. Select the one you want to use."
+              : "This uses money that is not reserved for a pot or savings."}
+        </p>
+      </>
+    );
+  };
   const colorPicker = () => (
     <fieldset className="color-picker">
       <legend>Make it yours</legend>
@@ -1974,6 +2261,11 @@ function BudgetModal({
     const actions: Record<string, string> = {
       account: "account.save",
       transaction: "transaction.add",
+      pot: "pot.save",
+      "pot-move":
+        fields.type === "reserve-transfer" ? "pot.transfer" : "pot.move",
+      "goal-transfer": "goal.transfer",
+      refund: "transaction.refund",
       "transaction-edit": "transaction.edit",
       "transaction-undo": "transaction.undo",
       "debt-edit": "debt.edit",
@@ -2001,7 +2293,14 @@ function BudgetModal({
           ? item.balance
           : undefined,
       expectedRevision:
-        (item && !["goal-move", "debt-pay"].includes(modal.type)) ||
+        (item &&
+          ![
+            "goal-move",
+            "goal-transfer",
+            "refund",
+            "pot-move",
+            "debt-pay",
+          ].includes(modal.type)) ||
         modal.type === "limit"
           ? openedRevision
           : undefined,
@@ -2047,10 +2346,12 @@ function BudgetModal({
           {modal.type === "debt-edit"
             ? "debt"
             : modal.type === "goal"
-              ? "savings goal"
-              : modal.type === "recurring"
-                ? "recurring expense"
-                : "account"}
+              ? "savings"
+              : modal.type === "pot"
+                ? "spending pot"
+                : modal.type === "recurring"
+                  ? "recurring expense"
+                  : "account"}
           ?
         </h3>
         <p>
@@ -2058,9 +2359,11 @@ function BudgetModal({
             ? "Only debts with no active loan or repayment entries can be deleted. Undo linked transactions first."
             : modal.type === "recurring"
               ? "Future reminders will be removed. Previous payments stay in your transaction history."
-              : modal.type === "goal"
-                ? "The goal must have no saved money. Its previous activity stays in your history."
-                : "Only empty accounts with no transactions or recurring expenses can be deleted."}
+              : modal.type === "pot"
+                ? "Spend or release all money first. Previous activity stays in your history."
+                : modal.type === "goal"
+                  ? "Savings must be empty. Previous activity stays in your history."
+                  : "Only empty accounts with no transactions or recurring expenses can be deleted."}
         </p>
         <button
           type="button"
@@ -2073,6 +2376,106 @@ function BudgetModal({
     );
   else
     switch (modal.type) {
+      case "pot":
+        content = (
+          <>
+            {input("Pot name", "name", {
+              placeholder: "e.g. Food, Home repairs, Birthday",
+              maxLength: 60,
+            })}
+            {categorySelect()}
+            {!item &&
+              amountField("amount", `Reserve now (${budget.currency})`, true)}
+            <p className="form-hint">
+              {fmt(balanceSummary(budget).free)} is free to assign. Reserving
+              money does not change your total or move money between accounts.
+              Expenses in this category use its pot automatically when there is
+              only one.
+            </p>
+          </>
+        );
+        break;
+      case "pot-move":
+        content = (
+          <>
+            <div className="modal-summary">
+              <span>{(item as SpendingPot).name} · left to spend</span>
+              <strong>{fmt((item as SpendingPot).balance)}</strong>
+            </div>
+            {segments("type", [
+              { value: "reserve", label: "Add money" },
+              { value: "reserve-release", label: "Release money" },
+              ...(budget.pots!.length > 1
+                ? [{ value: "reserve-transfer", label: "Move to pot" }]
+                : []),
+            ])}
+            {amountField()}
+            {fields.type === "reserve-transfer" &&
+              select(
+                "Move to spending pot",
+                "toPotId",
+                (budget.pots || [])
+                  .filter((p) => p.id !== item?.id)
+                  .map((p) => ({
+                    value: p.id,
+                    label: `${p.name} · ${fmt(p.balance)} left`,
+                  })),
+              )}
+            <p className="form-hint">
+              {fields.type === "reserve"
+                ? `${fmt(balanceSummary(budget).free)} free to assign. This reserves more money for the pot.`
+                : fields.type === "reserve-transfer"
+                  ? "This changes what the money is reserved for. Account balances and your total stay the same."
+                  : "Released money becomes free to assign or spend. Your account balances stay the same."}
+            </p>
+            {dateField()}
+            {noteField()}
+          </>
+        );
+        break;
+      case "goal-transfer":
+        content = (
+          <>
+            <p className="form-hint">
+              Record a transfer you made between your own accounts. The money
+              stays protected in {(item as Goal).name}; your total savings and
+              spendable balance stay the same.
+            </p>
+            {amountField()}
+            {accountSelect("Move savings from")}
+            {accountSelect("Move savings to", "toAccountId")}
+            {dateField()}
+            {noteField()}
+          </>
+        );
+        break;
+      case "refund": {
+        const original = item as Transaction;
+        content = (
+          <>
+            <div className="modal-summary">
+              <span>{original.title}</span>
+              <strong>{fmt(refundableAmount(budget, original))}</strong>
+              <span>Still refundable</span>
+            </div>
+            {amountField()}
+            {accountSelect("Refund received into")}
+            {dateField()}
+            {noteField()}
+            <p className="form-hint">
+              Record only money actually returned. A partial refund is fine.
+              This reduces spending in {original.category} on the refund date,
+              without counting as income.{" "}
+              {original.potId
+                ? "The money returns to the original spending pot."
+                : original.type === "saving-spent"
+                  ? "The money returns to protected savings in the receiving account."
+                  : "The money becomes free to assign or spend."}
+            </p>
+          </>
+        );
+        break;
+      }
       case "account":
         content = (
           <>
@@ -2150,6 +2553,7 @@ function BudgetModal({
             {fields.type === "transfer"
               ? accountSelect("Transfer to", "toAccountId")
               : categorySelect()}
+            {fields.type === "expense" && fundingSelect()}
             {dateField()}
             {noteField()}
           </>
@@ -2158,14 +2562,31 @@ function BudgetModal({
       case "goal":
         content = (
           <>
-            {input("What are you saving for?", "name", {
+            {input("Savings name", "name", {
               placeholder: "e.g. Rainy day fund, A little getaway",
               maxLength: 60,
             })}
-            {amountField("target", `Target amount (${budget.currency})`)}
+            {!item && (
+              <>
+                {input(`Already saved (${budget.currency})`, "amount", {
+                  type: "number",
+                  min: "0",
+                  required: false,
+                  placeholder: "0.00",
+                })}
+                {accountSelect("Account holding this money")}
+              </>
+            )}
+            {input(`Target amount (optional, ${budget.currency})`, "target", {
+              type: "number",
+              min: "0",
+              required: false,
+              placeholder: "No target needed",
+            })}
             <p className="form-hint">
-              Give your savings a purpose. You can add money from any account
-              after creating your goal.
+              Enter money already included in an account’s balance. It stays in
+              your total, but is excluded from spendable money. Savings carry
+              forward with no monthly requirement.
             </p>
             {colorPicker()}
           </>
@@ -2179,15 +2600,15 @@ function BudgetModal({
         content = (
           <>
             <div className="modal-summary">
-              <span>Saved toward {goal.name}</span>
+              <span>Saved in {goal.name}</span>
               <strong>
                 {fmt(goalBalance(goal))}
-                <small> / {fmt(goal.target)}</small>
+                {goal.target > 0 && <small> / {fmt(goal.target)}</small>}
               </strong>
             </div>
             {segments("type", [
               { value: "saving", label: "Add money" },
-              { value: "saving-spent", label: "Spend" },
+              { value: "saving-spent", label: "Spend savings" },
               { value: "release", label: "Release" },
             ])}
             {amountField()}
@@ -2198,9 +2619,22 @@ function BudgetModal({
             )}
             <p className="form-hint">
               {fields.type === "saving"
-                ? "This reserves money for your goal. Your account balance stays the same, while available money decreases."
+                ? "This protects money as savings. Your account and total balances stay the same, while spendable money decreases."
                 : `${fmt(allocation)} of this goal is held in the selected account. ${fields.type === "saving-spent" ? "Spending reduces both this goal and the account balance." : "Releasing returns this money to your available balance without spending it."}`}
             </p>
+            {fields.type === "saving-spent" && (
+              <>
+                {categorySelect()}
+                <div className="hint">
+                  <Icon name="leaf" size={17} />
+                  <p>
+                    You are choosing to use protected savings. This reduces your
+                    savings and the account holding them. Spending pots stay
+                    unchanged.
+                  </p>
+                </div>
+              </>
+            )}
             {dateField()}
             {noteField()}
           </>
@@ -2242,6 +2676,7 @@ function BudgetModal({
                 From {budget.accounts.find((a) => a.id === r.accountId)?.name}
               </span>
             </div>
+            {fundingSelect()}
             {dateField()}
             {noteField()}
             <p className="form-hint">
@@ -2463,7 +2898,7 @@ function BudgetModal({
           </button>
           {!deleting &&
             item &&
-            ["account", "goal", "recurring", "debt-edit"].includes(
+            ["account", "goal", "pot", "recurring", "debt-edit"].includes(
               modal.type,
             ) && (
               <button
@@ -2478,11 +2913,13 @@ function BudgetModal({
                 Delete{" "}
                 {modal.type === "debt-edit"
                   ? "debt"
-                  : modal.type === "goal"
-                    ? "goal"
-                    : modal.type === "recurring"
-                      ? "expense"
-                      : "account"}
+                  : modal.type === "pot"
+                    ? "pot"
+                    : modal.type === "goal"
+                      ? "savings"
+                      : modal.type === "recurring"
+                        ? "expense"
+                        : "account"}
               </button>
             )}
         </div>

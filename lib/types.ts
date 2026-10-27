@@ -12,6 +12,13 @@ export type Goal = {
   allocations: { accountId: string; amount: number }[];
   color: string;
 };
+// Spending pots describe a purpose, independently of the account paying for it.
+export type SpendingPot = {
+  id: string;
+  name: string;
+  category: string;
+  balance: number;
+};
 export type Debt = {
   id: string;
   person: string;
@@ -42,6 +49,11 @@ export type Transaction = {
     | "saving-spent"
     | "debt-in"
     | "debt-out"
+    | "reserve"
+    | "reserve-release"
+    | "reserve-transfer"
+    | "saving-transfer"
+    | "refund"
     | "adjustment";
   title: string;
   amount: number;
@@ -52,6 +64,9 @@ export type Transaction = {
   createdAt: string;
   note: string;
   referenceId?: string;
+  potId?: string;
+  toPotId?: string;
+  refundOfId?: string;
   voidedAt?: string;
   voidReason?: string;
   replacesId?: string;
@@ -60,6 +75,7 @@ export type Transaction = {
 export type TransactionEffects = {
   balances: { accountId: string; delta: number }[];
   allocations: { goalId: string; accountId: string; delta: number }[];
+  pots?: { potId: string; delta: number }[];
   debtPaid?: { debtId: string; delta: number };
   createdDebtId?: string;
   recurring?: { id: string; before: string; after: string };
@@ -80,6 +96,7 @@ export type Budget = {
   transactions: Transaction[];
   requestIds: string[];
   spendingLimits?: SpendingLimit[];
+  pots?: SpendingPot[];
 };
 export type Command = {
   action: string;
@@ -111,7 +128,16 @@ export const currencies = [
   "AUD",
 ];
 export const isSpending = (t: Transaction) =>
-  !t.voidedAt && (t.type === "expense" || t.type === "saving-spent");
+  !t.voidedAt && ["expense", "saving-spent", "refund"].includes(t.type);
+export const spendingAmount = (t: Transaction) =>
+  t.type === "refund" ? -t.amount : t.amount;
+export const refundableAmount = (budget: Budget, t: Transaction) =>
+  t.voidedAt || !["expense", "saving-spent"].includes(t.type)
+    ? 0
+    : t.amount -
+      budget.transactions
+        .filter((r) => !r.voidedAt && r.refundOfId === t.id)
+        .reduce((sum, r) => sum + r.amount, 0);
 export const canEditTransaction = (t: Transaction) =>
   !t.voidedAt &&
   !t.referenceId &&
@@ -132,3 +158,15 @@ export const reserved = (budget: Budget, accountId: string) =>
 export const available = (budget: Budget, accountId: string) =>
   (budget.accounts.find((item) => item.id === accountId)?.balance ?? 0) -
   reserved(budget, accountId);
+export function balanceSummary(budget: Budget) {
+  const total = budget.accounts.reduce((sum, a) => sum + a.balance, 0);
+  const savings = budget.goals.reduce((sum, g) => sum + goalBalance(g), 0);
+  const pots = (budget.pots || []).reduce((sum, p) => sum + p.balance, 0);
+  return {
+    total,
+    savings,
+    pots,
+    spendable: total - savings,
+    free: total - savings - pots,
+  };
+}

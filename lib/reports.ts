@@ -1,4 +1,9 @@
-import { isSpending, type Budget, type Transaction } from "./types";
+import {
+  isSpending,
+  spendingAmount,
+  type Budget,
+  type Transaction,
+} from "./types";
 
 export function monthlySummary(budget: Budget, month: string) {
   const transactions = budget.transactions.filter(
@@ -8,11 +13,11 @@ export function monthlySummary(budget: Budget, month: string) {
     .filter((t) => t.type === "income")
     .reduce((sum, t) => sum + t.amount, 0);
   const expenses = transactions.filter(isSpending);
-  const spent = expenses.reduce((sum, t) => sum + t.amount, 0);
+  const spent = expenses.reduce((sum, t) => sum + spendingAmount(t), 0);
   const byCategory = Object.entries(
     expenses.reduce<Record<string, number>>(
       (totals, t) => {
-        totals[t.category] = (totals[t.category] || 0) + t.amount;
+        totals[t.category] = (totals[t.category] || 0) + spendingAmount(t);
         return totals;
       },
       Object.create(null) as Record<string, number>,
@@ -52,6 +57,9 @@ export function transactionsCsv(transactions: Transaction[], budget: Budget) {
       "Category",
       "Note",
       "Status",
+      "Spending pot",
+      "To spending pot",
+      "Refund of transaction",
     ],
   ];
   for (const t of transactions)
@@ -66,6 +74,9 @@ export function transactionsCsv(transactions: Transaction[], budget: Budget) {
       t.category,
       t.note,
       t.voidedAt ? "Voided" : "Recorded",
+      budget.pots?.find((p) => p.id === t.potId)?.name || "",
+      budget.pots?.find((p) => p.id === t.toPotId)?.name || "",
+      t.refundOfId || "",
     ]);
   return "\uFEFF" + rows.map((row) => row.map(cell).join(",")).join("\r\n");
 }

@@ -10,6 +10,12 @@ export function captureEffects(
   after: Budget,
 ): TransactionEffects {
   const effects: TransactionEffects = { balances: [], allocations: [] };
+  effects.pots = [];
+  for (const pot of after.pots || []) {
+    const old = before.pots?.find((p) => p.id === pot.id)?.balance || 0;
+    if (pot.balance !== old)
+      effects.pots.push({ potId: pot.id, delta: pot.balance - old });
+  }
   for (const account of after.accounts) {
     const delta =
       account.balance -
@@ -54,6 +60,10 @@ export function undoTransaction(
   fail: (message: string) => never,
 ) {
   if (t.voidedAt) return fail("This transaction has already been undone.");
+  if (budget.transactions.some((r) => !r.voidedAt && r.refundOfId === t.id))
+    return fail(
+      "Undo this expense’s refunds before editing or undoing the original expense.",
+    );
   let effects = t.effects;
   // Entries created before reversal metadata existed can still be safely
   // reversed when they have no relationship to a goal, debt, or schedule.
@@ -134,6 +144,18 @@ export function undoTransaction(
       budget.accounts.find((a) => a.id === change.accountId) ??
       fail("The original account no longer exists.");
     account.balance -= change.delta;
+  }
+  for (const change of effects.pots || []) {
+    const pot =
+      budget.pots?.find((p) => p.id === change.potId) ??
+      fail(
+        "The original spending pot no longer exists. Correct the balance manually.",
+      );
+    if (pot.balance - change.delta < 0)
+      fail(
+        "This reserved money has already been used. Undo the later spending or release first.",
+      );
+    pot.balance -= change.delta;
   }
   t.voidedAt = new Date().toISOString();
 }
